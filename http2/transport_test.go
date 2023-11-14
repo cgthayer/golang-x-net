@@ -6370,18 +6370,73 @@ func TestTransportSlowClose(t *testing.T) {
 	res.Body.Close()
 }
 
+func BenchmarkManyHeaders(b *testing.B) {
+	benchSimpleRoundTrip(b, b.N, b.N)
+}
+
 func BenchmarkTransportClientConnection(b *testing.B) {
-	b.Logf("BenchmarkTransportClientConnection %d", b.N)
-	for n := 0; n < b.N; n++ {
-		benchSimpleRoundTrip(b, 0, 0)
+	b.Logf("BenchmarkTransportClientConnection N=%d", b.N)
+	// setup server
+	for n := 0; n < 1; n++ {
+		// setup parallel client
 	}
+	// wait for clients to complete
+}
+
+// see also benchSimpleRoundTrip
+func startSharedServer(b *testing.B) (*serverTester, *Transport) {
+	var nHeaders = 10
+	st := newServerTester(b,
+		func(w http.ResponseWriter, r *http.Request) {
+			for i := 0; i < nHeaders; i++ {
+				name := fmt.Sprint("A-", i)
+				w.Header().Set(name, "Benchmark")
+			}
+		},
+		optOnlyServer,
+		optQuiet,
+	)
+
+	tr := &Transport{TLSClientConfig: tlsConfigInsecure}
+	return st, tr
+}
+
+func stopSharedServer(st *serverTester, tr *Transport) {
+	tr.CloseIdleConnections()
+	st.Close()
 }
 
 func BenchmarkTransportClientConnectionParallel(b *testing.B) {
 	b.Logf("BenchmarkTransportClientConnectionParallel %d", b.N)
+	st, tr := startSharedServer(b)
+	defer stopSharedServer(st, tr)
+
+	req, err := http.NewRequest("GET", st.ts.URL, nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	nHeaders := 10
+	for i := 0; i < nHeaders; i++ {
+		name := fmt.Sprint("A-", i)
+		req.Header.Set(name, "*")
+	}
+
+	b.ResetTimer()
+
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			benchSimpleRoundTrip(b, 0, 0)
+			res, err := tr.RoundTrip(req)
+			if err != nil {
+				if res != nil {
+					res.Body.Close()
+				}
+				b.Fatalf("RoundTrip err = %v; want nil", err)
+			}
+			res.Body.Close()
+			if res.StatusCode != http.StatusOK {
+				b.Fatalf("Response code = %v; want %v", res.StatusCode, http.StatusOK)
+			}
 		}
 	})
 }
