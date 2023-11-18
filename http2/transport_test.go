@@ -861,7 +861,7 @@ func (ct *clientTester) writeReadPing() error {
 
 func (ct *clientTester) inflowWindow(streamID uint32) int32 {
 	pool := ct.tr.connPoolOrDef.(*clientConnPool)
-	pool.mu.Lock()
+	pool.mu.Lock("inflowWindow")
 	defer pool.mu.Unlock()
 	if n := len(pool.keys); n != 1 {
 		ct.t.Errorf("clientConnPool contains %v keys, expected 1", n)
@@ -5047,7 +5047,7 @@ func testTransportBodyReadError(t *testing.T, body []byte) {
 			if !ok {
 				return fmt.Errorf("conn pool is %T; want *clientConnPool", ct.tr.connPool())
 			}
-			cp.mu.Lock()
+			cp.mu.Lock("checkNoStreams")
 			defer cp.mu.Unlock()
 			conns, ok := cp.conns["dummy.tld:443"]
 			if !ok {

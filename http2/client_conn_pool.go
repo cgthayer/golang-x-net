@@ -10,9 +10,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
-	"log"
 	"net/http"
-	"sync"
 )
 
 // ClientConnPool manages a pool of HTTP/2 client connections.
@@ -43,7 +41,8 @@ var (
 type clientConnPool struct {
 	t *Transport
 
-	mu sync.RWMutex
+	// mu sync.RWMutex
+	mu SmartLock
 	// TODO: add support for sharing conns based on cert names
 	// (e.g. share conn for googleapis.com and appspot.com)
 	conns        map[string][]*ClientConn // key is host:port
@@ -74,13 +73,13 @@ func (p *clientConnPool) getClientConn(req *http.Request, addr string, dialOnMis
 		return cc, nil
 	}
 	for {
-		locked := p.mu.TryRLock()
-		if locked {
-			log.Printf("xxx getClientConn locked, no contention")
-		} else {
-			log.Printf("xxx getClientConn contention, waiting")
-			p.mu.RLock()
-		}
+		p.mu.RLock("getClientConn")
+		// if locked {
+		// 	log.Printf("xxx getClientConn locked, no contention")
+		// } else {
+		// 	log.Printf("xxx getClientConn contention, waiting")
+		// 	p.mu.RLock()
+		// }
 		for _, cc := range p.conns[addr] {
 			if cc.ReserveNewRequest() {
 				// When a connection is presented to us by the net/http package,
@@ -147,15 +146,12 @@ func (c *dialCall) dial(ctx context.Context, addr string) {
 	const singleUse = false // shared conn
 	c.res, c.err = c.p.t.dialClientConn(ctx, addr, singleUse)
 
-	c.p.mu.RLock()
+	c.p.mu.Lock("dial")
 	delete(c.p.dialing, addr)
-	c.p.mu.RUnlock()
 	if c.err == nil {
-		log.Printf("xxx dial upgrading to write lock")
-		c.p.mu.Lock()
 		c.p.addConnLocked(addr, c.res)
-		c.p.mu.Unlock()
 	}
+	c.p.mu.Unlock()
 
 	close(c.done)
 }
@@ -169,13 +165,14 @@ func (c *dialCall) dial(ctx context.Context, addr string) {
 // The return value used is whether c was used.
 // c is never closed.
 func (p *clientConnPool) addConnIfNeeded(key string, t *Transport, c *tls.Conn) (used bool, err error) {
-	p.mu.Lock()
+	p.mu.Lock("addConnIfNeeded")
 	for _, cc := range p.conns[key] {
 		if cc.CanTakeNewRequest() {
 			p.mu.Unlock()
-			return false, nil
+			ureturn false, nil
 		}
 	}
+
 	call, dup := p.addConnCalls[key]
 	if !dup {
 		if p.addConnCalls == nil {
@@ -208,7 +205,7 @@ func (c *addConnCall) run(t *Transport, key string, tc *tls.Conn) {
 	cc, err := t.NewClientConn(tc)
 
 	p := c.p
-	p.mu.Lock() // TODO consider xxx
+	p.mu.Lock("run")
 	if err != nil {
 		c.err = err
 	} else {
@@ -238,7 +235,7 @@ func (p *clientConnPool) addConnLocked(key string, cc *ClientConn) {
 }
 
 func (p *clientConnPool) MarkDead(cc *ClientConn) {
-	p.mu.Lock()
+	p.mu.Lock("MarkDead")
 	defer p.mu.Unlock()
 	for _, key := range p.keys[cc] {
 		vv, ok := p.conns[key]
@@ -256,8 +253,8 @@ func (p *clientConnPool) MarkDead(cc *ClientConn) {
 }
 
 func (p *clientConnPool) closeIdleConnections() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	p.mu.RLock("closeIdleConnections")
+	defer p.mu.RUnlock()
 	// TODO: don't close a cc if it was just added to the pool
 	// milliseconds ago and has never been used. There's currently
 	// a small race window with the HTTP/1 Transport's integration
