@@ -169,7 +169,7 @@ func (p *clientConnPool) addConnIfNeeded(key string, t *Transport, c *tls.Conn) 
 	for _, cc := range p.conns[key] {
 		if cc.CanTakeNewRequest() {
 			p.mu.Unlock()
-			ureturn false, nil
+			return false, nil
 		}
 	}
 
